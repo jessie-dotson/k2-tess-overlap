@@ -1,0 +1,274 @@
+---
+title: "Tess k2 overlap targets"
+author: "J. Dotson"
+date: "7/24/2019"
+output: html_document
+---
+
+Let's use the existing list of targets that overlap between K2 and TESS and put together some useful tables...
+
+This notebook is going to start with Knicole's list of overlapping K2 targets.  The general tasks between now and publication are the following...  
+
+1. shorten to first 13 sectors of TESS (first year)
+2. add EPIC information
+3. cross correlate with TESS 2-minute list
+4. cross correlate with Barclay / Barentsen ovelap list
+5. map between epic# and tic#
+6. add tic information
+7. identify known planet hosts
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(ggplot2)
+require(dplyr)
+require(knitr)
+require(readr)
+require(ggridges)
+require(gridExtra)
+require(summarytools)
+require(truncnorm)
+require(sjmisc)
+require(snakecase)
+require(stringr)
+
+require(progress)
+
+
+knitr::opts_knit$set(root.dir = '../.')
+myecho = TRUE
+```
+
+Knicole provided a list wtv-all-unique-targets.  It looks like it includes overlap for the first two years (assuming original pointing).  Let's just focus on the first 13 sectors.  Several reasons...  We have the 2 minute TESS target list for those sectors and the pointing has changed for several year two sectors afte she made the list.
+
+```{r cars}
+k2_overlaps <-read_csv("overlaplists/wtv-all-unique-targets.csv")
+```
+
+Let's dump the ones fromsectors 14 upwards and also add a column that specifies the sector rather than encoding that in a binary column.
+
+```{r }
+dumplist <- c("S14","S15","S16","S17","S18","S19","S20","S21","S22","S23","S24","S25","S26")
+
+k2_overlaps <- k2_overlaps %>% select(-dumplist)
+
+```
+
+There might be a cleverer way to do this, but I'm feeling brute-force today.  (rahr)
+
+```{r}
+k2_overlaps$sector <- rep(NA,nrow(k2_overlaps))
+
+jj <- 4 #column before the binary sector columns
+
+for (i in 1:13){
+  thiscol <- jj + i
+  temp <- which(k2_overlaps[,thiscol] == 1)
+  k2_overlaps$sector[temp] <- i
+}
+
+
+```
+
+```{r}
+k2_overlaps <- k2_overlaps %>% filter(!is.na(sector))
+
+dumplist <- c("S1","S2","S3","S4","S5","S6","S7","S8","S9","S10","S11","S12","S13")
+
+k2_overlaps <- k2_overlaps %>% select(-dumplist)
+
+```
+
+Let's check out where these targets are...
+
+```{r}
+baseplot <- ggplot(k2_overlaps) + theme_bw()
+p1 <- baseplot + geom_point(aes( RA, DEC),alpha=0.1)
+print(p1)
+
+p1 <- baseplot + geom_histogram(aes(DEC))
+print(p1)
+
+```
+
+
+Ok, let's add some epic information...
+
+```{r}
+#This is an updated version of the table I made for the planet prediction paper
+# using CasJobs
+
+k2_targets <- read_csv("k2-lists/K2observed_targets_final_jdotson.csv")
+
+```
+
+```{r}
+count(k2_targets, sci_campaign)
+```
+
+So it does look like we have all the campaigns here.  Let's check and see how many of these are unique targets vs repeated targets...
+
+```{r}
+
+jj <- unique(k2_targets$id)
+print(paste("Target list has",nrow(k2_targets),"entries"))
+print(paste(length(jj),"of which are unique"))
+
+```
+
+That looks plausible.  (Though worth checking elsewhere...) Before joining with the overlap table, let's also make a column for the repeated K2 observations.  First step is to collapse the entries for campaigns 9, 10, and 11 into single campaigns
+
+```{r}
+temp <- k2_targets %>% filter(sci_campaign %in% c(91, 92))
+jj <- unique(temp$id)
+print(paste("Number of unique targets in campaign 9 = ", length(jj)))
+print("This is = to the number of targets labeled campaign 92")
+
+```
+
+This means eliminating the dupes for campaign 9 is easy...
+
+```{r}
+k2_targets <- k2_targets %>% filter(sci_campaign != 91)
+jj <- which(k2_targets$sci_campaign == 92)
+k2_targets$sci_campaign[jj] <- 9
+
+count(k2_targets,sci_campaign)
+```
+
+It looks like the two halves of C10 have the same number of targets -- but let's double check that they are, indeed, the same targets.
+
+```{r}
+temp <- k2_targets %>% filter(sci_campaign %in% c(101, 102))
+jj <- unique(temp$id)
+print(paste("Number of unique targets in campaign 10 = ", length(jj)))
+
+```
+
+So, yes -- 101 and 102 have identical targets.
+
+```{r}
+k2_targets <- k2_targets %>% filter(sci_campaign != 102)
+jj <- which(k2_targets$sci_campaign == 101)
+k2_targets$sci_campaign[jj] <- 10
+
+count(k2_targets, sci_campaign)
+```
+
+Next campaign 11...  (I think 112 is a subset of 111, but let's double check!)
+
+```{r}
+temp <- k2_targets %>% filter(sci_campaign %in% c(111, 112))
+jj <- unique(temp$id)
+print(paste("Number of unique targets in campaign 11 = ", length(jj)))
+```
+
+Yup -- 111 has all the targets
+
+```{r}
+k2_targets <- k2_targets %>% filter(sci_campaign != 112)
+jj <- which(k2_targets$sci_campaign == 111)
+k2_targets$sci_campaign[jj] <- 11
+
+count(k2_targets, sci_campaign)
+```
+
+Ok -- now let's check in and see how many uniques are left and then move on to creating a new column to hold lists of campaigns.  (Might come back later and add separate numerical columns for second, third, etc campaigns.  But I'm not sure that's needed.)
+
+```{r}
+jj <- unique(k2_targets$id)
+print(paste("Number of targets in k2, all campaigns =",nrow(k2_targets)))
+print(paste("Number of unique targets = ", length(jj)))
+print(paste("Number of targets oberved in more than one campaign =",
+            nrow(k2_targets)-length(jj)))
+```
+
+```{r}
+#orig_k2_targets <- k2_targets #for development
+```
+
+
+
+```{r}
+#k2_targets <- orig_k2_targets #for development
+
+k2_targets$campaign_list <- as.character(k2_targets$sci_campaign)
+#k2_targets$campaign_list <- rep(NA, nrow(k2_targets))
+k2_targets$num_campaigns <- rep(1, nrow(k2_targets))
+
+repeated_list <- duplicated(k2_targets$id)
+repeated_index <- which(repeated_list)
+
+for (i in 1:length(repeated_index)){
+#for(i in 1:100){
+  thisindex <- repeated_index[i]
+  thisone <- k2_targets$id[thisindex]
+  jj <- which(k2_targets$id == thisone)
+  c_list <- sort(k2_targets$sci_campaign[jj])
+  string_clist <- str_c(c_list, collapse=", ")
+  
+  k2_targets$campaign_list[jj] <- string_clist
+  k2_targets$num_campaigns[jj] <- length(jj)
+}
+
+```
+
+Removing the old campaign column (for now) and getting rid of the (now) duplicate entries...
+
+```{r}
+k2_targets$sci_campaign <- NULL
+
+#temp_k2_targets <- k2_targets  #for development
+
+```
+
+```{r}
+#k2_targets<- temp_k2_targets  #for development
+
+k2_targets <- distinct(k2_targets, id, .keep_all=TRUE)
+
+```
+
+WooT!!!  Now have a list of all the observed K2 targets and their epic info.  Each source only appears once, even if it was observed multiple times.  Let's go ahead and write this out just in case...  
+
+
+```{r}
+write_csv(k2_targets,"k2-lists/unique_sources_k2")
+
+count(k2_targets, num_campaigns)
+```
+
+Ok -- now can join epic info with the targets that overlap with tess...
+
+```{r}
+overlap_with_epic <- merge(k2_overlaps, k2_targets,by.x="EPIC",by.y="id",all.x=TRUE)
+```
+
+Hmmm....  There are a bunch of targets in the overlap list with numbers that aren't legitimate epic numbers.  I need to cycle back to Knicole...
+
+In the meantime, let's try to cross-correlate with the 2 minute lists.  Did all sectors have overlaps?
+
+```{r}
+count(overlap_with_epic, sector)
+```
+
+No sector 1 or sector 4 overlap.  Everything else has some overlap...  Let's read in the 2 minute target lists and make an uber 2minute target list.
+
+
+
+
+```{r}
+baseurl<-"https://exoplanetarchive.ipac.caltech.edu/cgi-bin/nstedAPI/nph-nstedAPI?table=exoplanets"
+params<-"pl_hostname,pl_letter,pl_discmethod,pl_pnum,pl_orbper,pl_orbsmax,pl_orbsmaxerr1,pl_orbsmaxerr2,pl_orbeccen,pl_kepflag,pl_k2flag,ra_str,dec_str,ra,dec,st_dist,st_optmag,st_optband,gaia_gmag,st_teff,st_tefferr1,st_tefferr2,st_mass,st_masserr1,st_masserr2,st_rad,st_raderr1,st_raderr2,pl_cbflag,pl_eqt,pl_insol,pl_bmasse,pl_bmasseerr1,pl_bmasseerr2,pl_msinie,pl_rade,pl_radeerr1,pl_radeerr2,pl_trandep,pl_trandur,pl_imppar,pl_disc,pl_status,gaia_dist,st_spstr,st_logg,st_metfe,st_age,pl_locale,pl_facility,pl_telescope,pl_instrument,rowupdate"
+
+
+address<-paste(baseurl,"&select=",params,sep="")
+
+download.file(address, "data/confirmedplanets.csv")
+
+print(paste("Confirmed planets table downloaded on ",date()))
+```
+
+
+
+
