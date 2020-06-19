@@ -54,7 +54,7 @@ k2_overlaps <- k2_overlaps %>% select(-dumplist)
 
 ```
 
-There might be a cleverer way to do this, but I'm feeling brute-force today.  (rahr)
+There might be a cleverer way to do this, but I'm feeling brute-force today.  (rahr)  I double checked.  All these targets showed up in only one sector.
 
 ```{r}
 k2_overlaps$sector <- rep(NA,nrow(k2_overlaps))
@@ -90,6 +90,17 @@ p1 <- baseplot + geom_histogram(aes(DEC))
 print(p1)
 
 ```
+
+```{r}
+temp1 <- k2_overlaps %>% filter(Kp < 10)
+print(paste("Number brighter than Kp = 10:", nrow(temp1)))
+temp1 <- k2_overlaps %>% filter(Kp < 16)
+print(paste("Number brighter than Kp = 16:", nrow(temp1)))
+
+```
+
+
+
 
 
 Ok, let's add some epic information...
@@ -233,9 +244,17 @@ WooT!!!  Now have a list of all the observed K2 targets and their epic info.  Ea
 
 
 ```{r}
+
+```
+
+
+
+```{r}
 write_csv(k2_targets,"k2-lists/unique_sources_k2")
 
 count(k2_targets, num_campaigns)
+
+count(k2_targets,campaign_list)
 ```
 
 Ok -- now can join epic info with the targets that overlap with tess...
@@ -253,6 +272,13 @@ count(overlap_with_epic, sector)
 ```
 
 No sector 1 or sector 4 overlap.  Everything else has some overlap...  Let's read in the 2 minute target lists and make an uber 2minute target list.
+
+```{r}
+write_csv(k2_overlaps,"k2-lists/k2_overlaps.csv")
+write_csv(overlap_with_epic,"k2-lists/overlap_with_epic.csv")
+```
+
+
 
 
 

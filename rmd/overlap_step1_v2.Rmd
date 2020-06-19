@@ -1,0 +1,971 @@
+---
+title: "Tess k2 overlap targets"
+author: "J. Dotson"
+date: "7/24/2019"
+output: html_document
+---
+
+Let's use the existing list of targets that overlap between K2 and TESS and put together some useful tables...
+
+This notebook is going to start with Knicole's list of overlapping K2 targets.  The general tasks between now and publication are the following...  
+
+Moving to version 2.  I've regenerated Knicole's list of overlapping K2 targets.  see k2_targets.Rmd for details.  This has everything through sector 39.
+
+This notebook creates the following csv files for use elsewhere...
+
+write_csv(k2_overlaps,"overlaplists/with_some_k2_info.csv")
+Writes out a file that lists all the k2 targets that appear in a TESS sector.  Includes epic, ra, dec, magnitude the number of sectors and which sectors, the k2 campaigns and the investigation IDs
+
+write_csv(k2_targets,"k2-lists/unique_sources_k2")
+File contains a list of all the unique sources observed by K2.  Includes epic information.
+
+write_csv(overlap_with_epic,"overlaplists/overlap_with_epic.csv")
+The overlap list augmented with epic information
+
+Desired flow for project:
+
+1. generate overlap list usinb TESS visibility tool  (done in k2_targets.rmd)
+2. add EPIC information (this file: overlap_step1_v2.Rmd)
+3. map between epic# and tic#
+4. add tic information
+5. cross correlate with TESS 2-minute list
+6. cross correlate with Barclay / Barentsen ovelap list
+7. identify known planet hosts
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(ggplot2)
+library(viridis)
+require(dplyr)
+require(knitr)
+require(readr)
+require(ggridges)
+require(gridExtra)
+require(summarytools)
+require(truncnorm)
+require(sjmisc)
+require(snakecase)
+require(stringr)
+require(ggrepel)
+
+require(progress)
+require(lubridate)
+
+
+knitr::opts_knit$set(root.dir = '../.')
+myecho = TRUE
+```
+
+```{r}
+basecolor <- "deepskyblue4"
+```
+
+
+
+
+
+Using overlap list through sector 39
+
+```{r cars}
+k2_overlaps <-read_csv("overlaplists/all_k2_Sector1to39.csv")
+```
+
+
+There might be a cleverer way to do this, but I'm feeling brute-force today.  This bit runs a bit slow, but creates a column that lists all the sectors the target falls in.
+
+```{r}
+k2_overlaps$sector <- rep(NA,nrow(k2_overlaps))
+k2_overlaps$GIcycle <- rep(NA, nrow(k2_overlaps))
+
+
+jj <- 6 #column before the binary sector columns
+
+for (i in 1:39){
+  thiscol <- jj + i
+  thissector <- paste("S",i,sep="")
+  if (i < 14) {
+    thiscycle <- "cycle 1"
+  } else if (i > 26) {
+    thiscycle <- "cycle 3"
+  } else {
+    thiscycle <- "cycle 2"
+  }
+  
+  temp <- which(k2_overlaps[,thiscol] == 1)
+  
+  if(length(temp) > 0){
+    for (j in 1:length(temp)){
+      if (is.na(k2_overlaps$sector[temp[j]])){
+        k2_overlaps$sector[temp[j]] <- thissector
+        k2_overlaps$GIcycle[temp[j]] <- thiscycle
+      } else {
+        k2_overlaps$sector[temp[j]] <- paste(k2_overlaps$sector[temp[j]],", ", thissector,sep="")
+        k2_overlaps$GIcycle[temp[j]] <- paste(k2_overlaps$GIcycle[temp[j]]," & ", thiscycle,sep="")
+      }
+    }
+  }
+}
+
+
+```
+
+
+```{r}
+count(k2_overlaps, sector)
+count(k2_overlaps, GIcycle)
+```
+
+
+
+
+
+
+
+
+Let's get rid of the binary columns.  We don't need those anymore.
+
+
+```{r}
+#k2_overlaps <- k2_overlaps %>% filter(!is.na(sector))
+
+dumplist <- c("S1","S2","S3","S4","S5","S6","S7","S8","S9","S10","S11","S12","S13",
+              "S14","S15","S16","S17","S18","S19","S20","S21","S22","S23","S24","S25","S26",
+              "S27","S28","S29","S30","S31","S32","S33","S34","S35","S36","S37","S38","S39")
+
+k2_overlaps <- k2_overlaps %>% select(-dumplist)
+
+```
+
+Let's see if there are repeated targets...
+
+```{r}
+jj <- unique(k2_overlaps$epic)
+print(paste("Number of targets in k2-tess overlap, all campaigns =",nrow(k2_overlaps)))
+print(paste("Number of unique targets = ", length(jj)))
+print(paste("Number of targets oberved in more than one campaign =",
+            nrow(k2_overlaps)-length(jj)))
+```
+There are currently two entries which do not have a campaign identified.  Both have the same epic 221312395 and it was from C9.  Just brute force that replacement in here...
+
+
+
+```{r}
+jj <- which(k2_overlaps$epic == 221312395)
+k2_overlaps$campaign[jj] <- 9
+```
+
+Finding the targets that show up in more than one campaign... and combining those entries.  Creating some new columns to capture what has been observed in multiple campaigns.
+
+
+```{r}
+#thisepic <- k2_overlaps$epic[dupes[2]]
+#temp <- k2_overlaps %>% filter(epic == thisepic)
+
+
+k2_overlaps$campaign_list <- as.character(k2_overlaps$campaign)
+k2_overlaps$investigation_list <- as.character(k2_overlaps$Investigation_id)
+k2_overlaps$num_campaigns <- rep(1, nrow(k2_overlaps))
+
+repeated_list <- duplicated(k2_overlaps$epic)
+repeated_index <- which(repeated_list)
+
+for (i in 1:length(repeated_index)){
+#for(i in 1:100){
+  thisindex <- repeated_index[i]
+  thisone <- k2_overlaps$epic[thisindex]
+  jj <- which(k2_overlaps$epic == thisone)
+  c_list <- sort(k2_overlaps$campaign[jj])
+  string_clist <- str_c(c_list, collapse=", ")
+  i_list <- sort(k2_overlaps$Investigation_id[jj])
+  string_ilist <- str_c(i_list, collapse="|")
+  
+  k2_overlaps$campaign_list[jj] <- string_clist
+  k2_overlaps$investigation_list[jj] <- string_ilist
+  k2_overlaps$num_campaigns[jj] <- length(jj)
+}
+
+```
+
+```{r}
+k2_overlaps <- distinct(k2_overlaps, epic, .keep_all=TRUE)
+```
+ditching repetitve columns...
+
+```{r}
+dumplist <- c("Investigation_id","campaign")
+
+k2_overlaps <- k2_overlaps %>% select(-dumplist)
+```
+
+Confirming these are all now unique...
+
+```{r}
+jj <- unique(k2_overlaps$epic)
+print(paste("Number of targets in k2-tess overlap, all campaigns =",nrow(k2_overlaps)))
+print(paste("Number of unique targets = ", length(jj)))
+print(paste("Number of targets with more than entry =",
+            nrow(k2_overlaps)-length(jj)))
+```
+
+
+Let's check out where & when these targets are...
+
+
+```{r}
+
+cycle_counts <- count(k2_overlaps, GIcycle)
+
+k2_overlaps$GIcycle <- factor(k2_overlaps$GIcycle, 
+                              levels = c("cycle 1", "cycle 2", "cycle 3", "cycle 1 & cycle 3"))
+
+baseplot <- ggplot(k2_overlaps) + theme_bw()
+p1 <- baseplot + geom_bar(aes(GIcycle),col=basecolor, fill=basecolor)
+p1 <- p1 + ylab("Number of K2 targets") + xlab("TESS cycle")
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14))
+p1 <- p1 + geom_text(data=cycle_counts,aes(x=GIcycle, y=n, label=n), position=position_dodge(width=0.9), vjust= +1.5, size=8,col="white")
+print(p1)
+
+
+```
+
+Plot for Joey March 2020
+
+```{r}
+
+field_coords <- read_csv("k2-lists/campaign_coords.csv",col_types="ccc")
+
+```
+
+```{r}
+
+to_decimal <- function(x){
+  jj <- strsplit(x,":")
+  answer <- as.numeric(jj[[1]][1]) + as.numeric(jj[[1]][2])/60 + as.numeric(jj[[1]][3])/60/60
+  return(answer)
+}
+
+to_degrees <- function(x){
+  answer <- x / 24 * 360
+  return(answer)
+}
+
+
+
+
+```
+
+```{r}
+field_coords$RA2 <- sapply(field_coords$RA, to_decimal)
+field_coords$RAdeg <- sapply(field_coords$RA2, to_degrees)
+
+field_coords$Dec_sign <- sapply(field_coords$Dec, 
+                                function(x) {
+                                  str_sub(x,end=1)
+                                  }
+                                )
+field_coords$Dec_num <- sapply(field_coords$Dec, 
+                                function(x) {
+                                  str_sub(x,start=2)
+                                  }
+                                )
+field_coords$Dec_num2 <- sapply(field_coords$Dec_num, to_decimal)
+
+jj <- which(field_coords$Dec_sign == "-")
+field_coords$Dec_deg <- field_coords$Dec_num2
+field_coords$Dec_deg[jj] <- -1 * field_coords$Dec_num2[jj]
+  
+```
+
+```{r}
+k2_coords <- read_csv("k2-lists/k2_unique_targets.csv")
+```
+
+
+```{r}
+
+field_coords$Dec_deg2 <- field_coords$Dec_deg
+
+field_coords <- field_coords %>% filter(field != "9")
+field_coords$field_label <- paste("C",field_coords$field,sep="")
+field_coords <- field_coords %>% filter(field != "18")
+jj <- which(field_coords$field_label == "C5")
+field_coords$field_label[jj] <- "C5/C18"
+field_coords$Dec_deg[jj] <- 16.0  #nudging
+field_coords$Dec_deg2[jj] <- 14.0  #nudging
+
+jj <- which(field_coords$field_label == "C19")
+field_coords$Dec_deg[jj] <- -3.5  #nudging
+field_coords$Dec_deg2[jj] <- -2  #nudging
+
+jj <- which(field_coords$field_label == "C12")
+field_coords$Dec_deg[jj] <- -6.0 #nudging
+field_coords$Dec_deg2[jj] <- -7.5 #nudging
+
+
+#baseplot <- ggplot(k2_overlaps) + theme_bw()
+baseplot <- ggplot(k2_coords) + theme_bw()
+
+# at request of referee for Mma's paper, let's add the planets she's discussing
+planetname <- c('K2-114','K2-167','K2-237','K2-261')
+ra_deg <- c(127.882912, 336.576123, 253.768848, 163.032312)
+dec_deg <- c(11.922255, -18.011665, -28.710584, 0.493167)
+paper_planets <- data.frame(name = planetname, ra_deg=ra_deg, dec_deg=dec_deg)
+
+
+
+p1 <- baseplot + geom_point(aes(RA, Dec),alpha=0.1, size=0.01, color="grey90")
+p1 <- p1 + geom_point(data=k2_overlaps, aes( RA, Dec),alpha=0.3,size=0.01)
+p1 <- p1 + theme(axis.text=element_text(size=30),
+        axis.title=element_text(size=32))
+p1 <- p1 + geom_text(data=field_coords,aes(label=field_label,x=RAdeg, y=Dec_deg), size=12)
+p1 <- p1 + scale_x_reverse()
+#print(p1)
+#ggsave("plots/skycoverage_paper.png", scale=4) #sent to Joey
+
+p1 <- p1 + geom_point(data=paper_planets, aes(ra_deg, dec_deg), size=3,color="red")
+p1 <- p1 + geom_text(data=paper_planets, aes(label=name, x=ra_deg, y=dec_deg), size=10, color="red",
+                     hjust = 0, nudge_x = 2, nudge_y = -0.5, fontface="bold")
+print(p1)
+ggsave("plots/skycoverage_paper_wplanets.png", scale=4)
+
+p2 <- baseplot + geom_point(aes(RA, Dec),alpha=0.1, size=0.01, color="grey90")
+p2 <- p2 + geom_point(data=k2_overlaps, aes( RA, Dec),alpha=0.3,size=0.01)
+p2 <- p2 + theme(axis.text=element_text(size=30),
+        axis.title=element_text(size=32))
+p2 <- p2 + geom_text(data=field_coords,aes(label=field_label,x=RAdeg, y=Dec_deg2), size=8)
+p2 <- p2 + scale_x_reverse() + coord_fixed(ratio=1)
+#print(p2)
+#ggsave("plots/skycoverage_paper2.png", scale=4) #sent to Joey
+
+p2 <- p2 + geom_point(data=paper_planets, aes(ra_deg, dec_deg), size=3,color="red")
+p2 <- p2 + geom_text(data=paper_planets, aes(label=name, x=ra_deg, y=dec_deg), size=6, color="red",
+                     hjust = 0, nudge_x=2, nudge_y=-2, fontface="bold")
+print(p2)
+ggsave("plots/skycoverage_paper2 _wplanets.png", scale=4)
+
+```
+
+And another version only showing Cycles 1 and 2 in different colors...
+
+```{r}
+# trying out plotting C1 and C2 in different colors requires adding a new column, and throwing out the 
+# targets that are only in C3
+
+k2_overlaps12 <- k2_overlaps %>% filter(GIcycle != "cycle 3")
+k2_overlaps12$cycle <- k2_overlaps12$GIcycle
+
+jj <- which(k2_overlaps12$cycle == "cycle 1 & cycle 3")
+k2_overlaps12$cycle[jj] <- "cycle 1"
+
+p1 <- baseplot + geom_point(aes(RA, Dec),alpha=0.1, size=0.01, color="grey90")
+p1 <- p1 + geom_point(data=k2_overlaps12, aes( RA, Dec, color=cycle),alpha=0.3,size=0.01)
+p1 <- p1 + theme(axis.text=element_text(size=30),
+        axis.title=element_text(size=32))
+p1 <- p1 + geom_text(data=field_coords,aes(label=field_label,x=RAdeg, y=Dec_deg), size=12)
+p1 <- p1 + scale_x_reverse()
+#print(p1)
+#ggsave("plots/skycoverage_paper.png", scale=4) #sent to Joey
+
+p1 <- p1 + geom_point(data=paper_planets, aes(ra_deg, dec_deg), size=3)
+p1 <- p1 + geom_text(data=paper_planets, aes(label=name, x=ra_deg, y=dec_deg), size=10, 
+                     hjust = 0, nudge_x = 2, nudge_y = -0.5, fontface="bold")
+p1 <- p1 + theme(legend.position = c(0.9,0.1))
+p1 <- p1 + theme(legend.title = element_blank())
+p1 <- p1 + theme(legend.text = element_text(size=30))
+p1 <- p1 + guides(color=guide_legend(override.aes = list(size=5,  alpha=0.8), 
+                                     label.vjust = 0.75, keyheight = 3))
+print(p1)
+ggsave("plots/skycoverage_paper_wplanets_c.png", scale=4)
+
+p2 <- baseplot + geom_point(aes(RA, Dec),alpha=0.1, size=0.01, color="grey90")
+p2 <- p2 + geom_point(data=k2_overlaps12, aes( RA, Dec, color=cycle),alpha=0.3,size=0.01)
+p2 <- p2 + theme(axis.text=element_text(size=30),
+        axis.title=element_text(size=32))
+p2 <- p2 + geom_text(data=field_coords,aes(label=field_label,x=RAdeg, y=Dec_deg2), size=8)
+p2 <- p2 + scale_x_reverse() + coord_fixed(ratio=1)
+#print(p2)
+#ggsave("plots/skycoverage_paper2.png", scale=4) #sent to Joey
+
+p2 <- p2 + geom_point(data=paper_planets, aes(ra_deg, dec_deg), size=3)
+p2 <- p2 + geom_text(data=paper_planets, aes(label=name, x=ra_deg, y=dec_deg), size=6,
+                     hjust = 0, nudge_x=2, nudge_y=-2, fontface="bold")
+#print(p2)
+#ggsave("plots/skycoverage_paper2 _wplanets_c.png", scale=4)
+
+
+```
+
+
+
+
+
+```{r}
+baseplot <- ggplot(k2_overlaps) + theme_bw()
+p1 <- baseplot + geom_point(aes( RA, Dec),alpha=0.1,size=0.001)
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14))
+print(p1)
+ggsave("plots/skycoverage.png", width=7, height=2.5, units="in",dpi=300)
+
+p1 <- baseplot + geom_point(aes( RA, Dec),alpha=0.1,size=0.1)
+p1 <- p1 + theme(axis.text=element_text(size=30),
+        axis.title=element_text(size=32))
+print(p1)
+ggsave("plots/skycoverage_aas.png", scale=4) #used for poster.
+
+p1 <- baseplot + geom_point(aes( RA, Dec,col=as.factor(num_sectors)),alpha=0.1,size=0.1)
+p1 <- p1 + theme(legend.position = "none")
+print(p1)
+
+
+p1 <- baseplot + geom_histogram(aes(Dec))
+print(p1)
+
+```
+
+```{r}
+temp1 <- k2_overlaps %>% filter(mag < 10)
+print(paste("Number brighter than Kp = 10:", nrow(temp1)))
+temp1 <- k2_overlaps %>% filter(mag < 16)
+print(paste("Number brighter than Kp = 16:", nrow(temp1)))
+
+```
+
+```{r}
+baseplot <- ggplot(k2_overlaps) + theme_bw()
+p1 <- baseplot + geom_histogram(aes(mag),fill=basecolor,col="white")
+p1 <- p1+ ylab("Number of targets") + xlab("Kepler magnitude")
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14))
+print(p1)
+```
+
+```{r}
+
+baseplot <- ggplot(k2_targets) + theme_bw()
+p1 <- baseplot + geom_histogram(aes(kp),fill=basecolor,col="white")
+p1 <- p1+ ylab("Number of targets") + xlab("Kepler magnitude")
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14))
+print(p1)
+
+```
+
+
+
+
+
+
+ggplot(data, aes(x=x, y=y) ) +
+  geom_bin2d() +
+  theme_bw()
+
+```{r}
+baseplot <- ggplot(k2_overlaps) + theme_bw()
+p1 <- baseplot + geom_bin2d(aes(x=num_sectors,y=num_campaigns),bins=2)
+print(p1)
+
+
+```
+
+
+Let's write out this overlap list just in case it's of use elsewhere...
+
+```{r}
+write_csv(k2_overlaps,"overlaplists/with_some_k2_info.csv")
+```
+
+
+
+
+Ok, let's add some epic information...
+
+```{r}
+#This is an updated version of the table I made for the planet prediction paper
+# using CasJobs
+
+k2_targets <- read_csv("k2-lists/K2observed_targets_final_jdotson.csv")
+
+```
+
+```{r}
+count(k2_targets, sci_campaign)
+```
+
+So it does look like we have all the campaigns here.  Let's check and see how many of these are unique targets vs repeated targets...
+
+```{r}
+
+jj <- unique(k2_targets$id)
+print(paste("Target list has",nrow(k2_targets),"entries"))
+print(paste(length(jj),"of which are unique"))
+
+```
+
+That looks plausible.  (Though worth checking elsewhere...) Before joining with the overlap table, let's also make a column for the repeated K2 observations.  First step is to collapse the entries for campaigns 9, 10, and 11 into single campaigns
+
+```{r}
+temp <- k2_targets %>% filter(sci_campaign %in% c(91, 92))
+jj <- unique(temp$id)
+print(paste("Number of unique targets in campaign 9 = ", length(jj)))
+print("This is = to the number of targets labeled campaign 92")
+
+```
+
+This means eliminating the dupes for campaign 9 is easy...
+
+```{r}
+k2_targets <- k2_targets %>% filter(sci_campaign != 91)
+jj <- which(k2_targets$sci_campaign == 92)
+k2_targets$sci_campaign[jj] <- 9
+
+count(k2_targets,sci_campaign)
+```
+
+It looks like the two halves of C10 have the same number of targets -- but let's double check that they are, indeed, the same targets.
+
+```{r}
+temp <- k2_targets %>% filter(sci_campaign %in% c(101, 102))
+jj <- unique(temp$id)
+print(paste("Number of unique targets in campaign 10 = ", length(jj)))
+
+```
+
+So, yes -- 101 and 102 have identical targets.
+
+```{r}
+k2_targets <- k2_targets %>% filter(sci_campaign != 102)
+jj <- which(k2_targets$sci_campaign == 101)
+k2_targets$sci_campaign[jj] <- 10
+
+count(k2_targets, sci_campaign)
+```
+
+Next campaign 11...  (I think 112 is a subset of 111, but let's double check!)
+
+```{r}
+temp <- k2_targets %>% filter(sci_campaign %in% c(111, 112))
+jj <- unique(temp$id)
+print(paste("Number of unique targets in campaign 11 = ", length(jj)))
+```
+
+Yup -- 111 has all the targets
+
+```{r}
+k2_targets <- k2_targets %>% filter(sci_campaign != 112)
+jj <- which(k2_targets$sci_campaign == 111)
+k2_targets$sci_campaign[jj] <- 11
+
+count(k2_targets, sci_campaign)
+```
+
+Ok -- now let's check in and see how many uniques are left and then move on to creating a new column to hold lists of campaigns.  (Might come back later and add separate numerical columns for second, third, etc campaigns.  But I'm not sure that's needed.)
+
+```{r}
+jj <- unique(k2_targets$id)
+print(paste("Number of targets in k2, all campaigns =",nrow(k2_targets)))
+print(paste("Number of unique targets = ", length(jj)))
+print(paste("Number of targets oberved in more than one campaign =",
+            nrow(k2_targets)-length(jj)))
+```
+
+```{r}
+#orig_k2_targets <- k2_targets #for development
+```
+
+
+
+```{r}
+#k2_targets <- orig_k2_targets #for development
+
+k2_targets$campaign_list <- as.character(k2_targets$sci_campaign)
+#k2_targets$campaign_list <- rep(NA, nrow(k2_targets))
+k2_targets$num_campaigns <- rep(1, nrow(k2_targets))
+
+repeated_list <- duplicated(k2_targets$id)
+repeated_index <- which(repeated_list)
+
+for (i in 1:length(repeated_index)){
+#for(i in 1:100){
+  thisindex <- repeated_index[i]
+  thisone <- k2_targets$id[thisindex]
+  jj <- which(k2_targets$id == thisone)
+  c_list <- sort(k2_targets$sci_campaign[jj])
+  string_clist <- str_c(c_list, collapse=", ")
+  
+  k2_targets$campaign_list[jj] <- string_clist
+  k2_targets$num_campaigns[jj] <- length(jj)
+}
+
+```
+
+Removing the old campaign column (for now) and getting rid of the (now) duplicate entries...
+
+```{r}
+k2_targets$sci_campaign <- NULL
+
+#temp_k2_targets <- k2_targets  #for development
+
+```
+
+```{r}
+#k2_targets<- temp_k2_targets  #for development
+
+k2_targets <- distinct(k2_targets, id, .keep_all=TRUE)
+
+```
+
+WooT!!!  Now have a list of all the observed K2 targets and their epic info.  Each source only appears once, even if it was observed multiple times.  Let's go ahead and write this out just in case...  
+
+
+```{r}
+write_csv(k2_targets,"k2-lists/unique_sources_k2")
+
+count(k2_targets, num_campaigns)
+
+count(k2_targets,campaign_list)
+```
+
+Ok -- now can join epic info with the targets that overlap with tess...
+
+```{r}
+overlap_with_epic <- merge(k2_overlaps, k2_targets,by.x="epic",by.y="id",all.x=TRUE)
+```
+
+
+Did all sectors have overlaps?
+
+```{r}
+count(overlap_with_epic, sector)
+```
+
+Sectors with no overlaps = 1, 4, 14, 15, 16, 18, 19, 24, 25, 26, 31
+
+
+
+```{r}
+#write_csv(k2_overlaps,"k2-lists/k2_overlaps.csv") #duplicate 
+write_csv(overlap_with_epic,"overlaplists/overlap_with_epic.csv")
+```
+
+```{r}
+overlap_with_epic$teff <- as.numeric(overlap_with_epic$teff)
+overlap_with_epic$logg <- as.numeric(overlap_with_epic$logg)
+```
+
+plot_t_logg <- ggplot(dr25stellar) +
+  geom_point(aes(x=teff,y=logg),col="cadetblue",alpha=0.1,size=0.4) + mytheme 
+#plot(plot_t_logg + ggtitle("DR25 stars"))
+
+plot_t_logg <- plot_t_logg + scale_x_reverse(limits=c(15000,0)) + scale_y_reverse()
+#plot(plot_t_logg + ggtitle("DR25 stars"))
+
+plot_t_logg <- plot_t_logg +
+  geom_point(data=kepler_planets,aes(x=st_teff,y=st_logg),size=0.4,col="grey")
+#plot(plot_t_logg2 + ggtitle("DR25 stars + confirmed planet hosts"))
+
+plot_t_logg <- plot_t_logg + geom_point(data=shortplanets,aes(x=st_teff,y=st_logg),
+                                          col="black",size=0.4) 
+plot_t_logg <- plot_t_logg + labs(x = "Teff (K)", y = "log(g)")
+print(plot_t_logg + ggtitle("DR25 stars + confirmed planet hosts + short period hosts"))
+
++ labs(fill = "Dose (mg)")
+```{r}
+
+baseplot <- ggplot(overlap_with_epic) + theme_bw()
+p1 <- baseplot + geom_point(aes(x=teff,y=logg,col=mag),alpha=0.5,size=0.2)
+p1 <- p1 + scale_x_reverse(limits=c(15000,0)) + scale_y_reverse() 
+p1 <- p1 + labs(x = "Teff (K)", y = "log(g)", fill = "KepMag")
+p1 <- p1 + scale_color_viridis(option = "D", direction=-1)
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), legend.text=element_text(size=12),
+        legend.title=element_text(size=14))
+plot(p1)
+
+p1 <- baseplot + geom_point(aes(x=teff,y=logg,col=mag,size=(1/mag)),alpha=0.5,)
+p1 <- p1 + scale_x_reverse(limits=c(15000,0)) + scale_y_reverse() 
+p1 <- p1 + labs(x = "Teff (K)", y = "log(g)", fill = "KepMag")
+p1 <- p1 + scale_color_viridis(option = "D", direction=-1)
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14), legend.text=element_text(size=12),
+        legend.title=element_text(size=14))
+plot(p1)
+
+```
+
+
+
+
+
+This file is to run some tests to cross-correlate with TIC and 2-minute lists.
+
+```{r}
+temp <- overlap_with_epic[1:10000,1:3]
+write_csv(temp, "overlaplists/firstset.csv")
+```
+
+
+In the meantime, let's take a look at NExScI and identify the known K2 planets in the overlap list.
+
+
+```{r}
+baseurl<- "https://exoplanetarchive.ipac.caltech.edu/cgi-bin/nstedAPI/nph-nstedAPI?table=k2names"
+params <- "epic_host,k2_campaign_str,k2_name,alt_name,k2_kepmag"
+
+address <- paste(baseurl,"&select=",params,sep="")
+
+download <- TRUE
+if(download){
+  download.file(address, "data/k2confirmedplanets.csv")
+}
+
+print(paste("K2 confirmed planets table downloaded on ",date()))
+```
+
+
+
+
+
+
+```{r}
+k2planets <- read_csv("data/k2confirmedplanets.csv")
+
+#need to modify epic column so it just has the number.  
+#(wish NExScI were more consistent...)
+
+k2planets$epic <- str_sub(k2planets$epic_host,6)
+k2planets$epic <- as.numeric(k2planets$epic)
+
+```
+
+Need to groom this a little in order to get down to one line per planet system.  But would like to keep that info...
+
+```{r}
+k2planets$k2hostname <- str_sub(k2planets$k2_name,1,-2)
+k2planets$k2hostname <- str_trim(k2planets$k2hostname)
+
+k2planets <- k2planets %>% arrange(epic)
+k2planets$num_planets <- rep(1, nrow(k2planets))
+
+planetcount <- nrow(k2planets)
+
+lastone <- 0
+lastindex <- 0
+
+for (i in 1:(planetcount)){
+  thisone <- k2planets$epic[i]
+  if (thisone == lastone) {
+    currentcount <- currentcount + 1
+  } else {
+    lastone <- thisone
+    lastindex <- i
+    currentcount <- 1
+  }
+  k2planets$num_planets[lastindex] <- currentcount
+}
+
+k2planets$planet <- rep("confirmed", nrow(k2planets))
+
+```
+
+
+
+
+And get rid of the multiple entries for the multis
+
+```{r}
+k2planet_hosts <- distinct(k2planets, epic, .keep_all=TRUE)
+```
+
+
+
+Ok, how many of these are on the overlap list?
+
+```{r}
+
+overlap <- merge(overlap_with_epic, k2planet_hosts, by.x="epic", by.y="epic",all.x=TRUE)
+```
+
+```{r}
+count(overlap,planet)
+```
+
+Let's make a list just of the planet hosts in the overlap region.
+
+```{r}
+overlap_hosts <- overlap %>% filter(planet == "confirmed")
+
+keep_cols <- c("k2_name", "alt_name","k2_kepmag","num_planets", "num_campaigns.x","campaign_list.x","num_sectors","sector")
+
+overlap_hosts <- overlap_hosts %>% select(keep_cols)
+
+overlap_hosts <- overlap_hosts %>% arrange(k2_kepmag)
+
+kable(overlap_hosts)
+
+```
+a few basic stats
+
+```{r}
+print(paste("Number of host stars in overlap region = ", nrow(overlap_hosts)))
+
+temp <- overlap_hosts %>% filter(num_planets >1)
+print(paste("Number of multiplanet systems in overlap region = ", nrow(temp)))
+```
+
+
+
+Any plots we can make about these planets that might go into the poster?
+
+```{r}
+
+baseplot <- ggplot(overlap_hosts) + theme_bw()
+p1 <- baseplot + geom_histogram(aes(k2_kepmag),fill=basecolor,col="white")
+p1 <- p1+ ylab("Number of targets") + xlab("Kepler magnitude")
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14))
+print(p1)
+
+
+```
+
+
+
+
+
+Also, let's make a table of all the planets on the overlap list...
+
+```{r}
+overlap_planets <- merge(overlap_with_epic, k2planets, by.x="epic", by.y="epic")
+```
+
+Make table suitable for poster...
+
+```{r}
+keep_cols <- c("k2_name", "alt_name","k2_kepmag","num_planets", "num_campaigns.x","campaign_list.x","num_sectors","sector")
+
+overlap_planets <- overlap_planets %>% select(keep_cols)
+
+overlap_planets <- overlap_planets %>% arrange(k2_kepmag, alt_name)
+
+kable(overlap_planets)
+```
+
+What about K2 planet candidates in the overlap region?
+
+Let's download the k2 candidate table...
+
+```{r}
+baseurl<- "https://exoplanetarchive.ipac.caltech.edu/cgi-bin/nstedAPI/nph-nstedAPI?table=k2candidates"
+params <- "epic_host,k2_campaign_str,k2_name,alt_name,k2_kepmag"
+
+params <- "epic_name,epic_candname,pl_name,k2c_refdisp,k2c_disp,k2_campaign_str,pl_orbper,pl_orbpererr1,pl_orbpererr2,pl_rade,pl_radeerr1,pl_radeerr2,st_kep"
+
+address <- paste(baseurl,"&select=",params,sep="")
+
+download <- TRUE
+if(download){
+  download.file(address, "data/k2candidateplanets.csv")
+}
+
+print(paste("K2 candidate planets table downloaded on ",date()))
+```
+
+
+
+
+
+
+```{r}
+k2candidates <- read_csv("data/k2candidateplanets.csv")
+
+#need to modify epic column so it just has the number.  
+#(wish NExScI were more consistent...)
+
+k2candidates$epic <- str_sub(k2candidates$epic_name,6)
+k2candidates$epic <- as.numeric(k2candidates$epic)
+
+```
+It looks like there are lots of duplicates on this list.  Maybe they put an entry in every time someone publishes something as a candidate?  For reference, let's figure out how many unique candidates there are.  (Not needed for this poster, but still of interest...)
+
+```{r}
+print(paste("Number of entries in K2 candidate table at NExScI ", nrow(k2candidates)))
+temp <- k2candidates %>% distinct(epic_candname)
+print(paste("Number of unique k2 planet candidates", nrow(temp)))
+
+
+```
+
+
+
+This list includes everything that was ever published as a candidate -- so it includes a lot of confirmed planets.  Luckily for us, NExScI has a column for that...  Let's just select down to the candidate planets yet to be confirmed...  ;)
+
+```{r}
+k2candidates <- k2candidates %>% filter(k2c_disp == "CANDIDATE")
+
+print(paste("Number of k2 candidate entries",nrow(k2candidates)))
+
+#let's ditch the duplicates...
+k2candidates <- k2candidates %>% distinct(epic_candname, .keep_all = TRUE)
+print(paste("Number of unique K2 candidates", nrow(k2candidates)))
+```
+
+Ok, how many of the K2 candidates are in the overlap region?
+
+```{r}
+overlap_candidates <- merge(overlap, k2candidates, by.x="epic", by.y="epic")
+
+print(paste("Number of planet candidates in overlap region", nrow(overlap_candidates)))
+
+overlap_candidate_hosts <- overlap_candidates %>% distinct(epic, .keep_all = TRUE)
+print(paste("Number of planet candidate host stars", nrow(overlap_candidate_hosts)))
+```
+
+Let's see if by combining the candidates and the confirmed planets I get a reasonable plot...
+
+```{r}
+PnC <- overlap_candidate_hosts %>% select(c("epic","mag","num_sectors","sector","num_campaigns.x",
+                                            "campaign_list.x","k2c_disp"))
+colnames(PnC) <- c("name","mag","num_sectors","sector","num_campaigns",
+                                            "campaign_list","disposition")
+PnC$disposition <- str_to_lower(PnC$disposition)
+
+temp <- overlap_hosts %>% select(c("alt_name","k2_kepmag","num_sectors","sector","num_campaigns.x","campaign_list.x"))
+
+colnames(temp) <- c("name","mag","num_sectors","sector","num_campaigns",
+                                            "campaign_list")
+
+temp$disposition <- rep("confirmed",nrow(temp))
+
+PnC <- rbind(PnC,temp)
+```
+
+
+cols <- c("8" = "red", "4" = "blue", "6" = "darkgreen", "10" = "orange")
+p + scale_colour_manual(values = cols)
+
+```{r}
+baseplot <- ggplot(PnC) + theme_bw()
+p1 <- baseplot + geom_histogram(aes(mag),fill=basecolor,col="white")
+p1 <- p1+ ylab("Number of targets") + xlab("Kepler magnitude")
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14))
+print(p1)
+
+mycols <- c("lightsteelblue4",basecolor)
+mycols <- c("lightsteelblue3",basecolor)
+
+p1 <- baseplot + geom_histogram(aes(mag,fill=disposition),col="white")
+p1 <- p1+ ylab("Number of host stars") + xlab("Kepler magnitude")
+p1 <- p1 + theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14)) + scale_fill_manual(values=mycols)
+p1 <- p1 + theme(legend.title = element_blank()) + theme(legend.text=element_text(size=14))
+print(p1)
+
+
+```
+
+
+

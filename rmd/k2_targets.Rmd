@@ -1,0 +1,170 @@
+---
+title: "K2 targets"
+author: "J. Dotson"
+date: "12/5/2019"
+output: html_document
+---
+
+For future use, reading in the full GO target list and manipulating it...  (Target list from the keplerscience.arc.nasa.gov site)
+
+**Note, as of 12/26/1019, this doesn't include the engineering campaign...  :(
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(ggplot2)
+require(dplyr)
+require(knitr)
+require(readr)
+require(ggridges)
+require(gridExtra)
+require(summarytools)
+require(truncnorm)
+require(sjmisc)
+require(snakecase)
+require(stringr)
+
+require(progress)
+
+
+knitr::opts_knit$set(root.dir = '../.')
+myecho = TRUE
+```
+
+Input
+
+```{r input}
+k2 <- read_csv("k2-lists/GO_all_campaigns_to_date.csv")
+```
+
+simplify column headings
+```{r}
+mycols <- c("epic", "RA", "Dec", "mag","Investigation_id", "campaign")
+colnames(k2) <- mycols
+```
+
+
+
+let's get rid of the custom masks...
+
+```{r }
+k2_real_targets <- k2 %>% filter(!is.na(RA))
+
+#Making sure the Decs are all there
+jj <- which(is.na(k2_real_targets$Dec))
+```
+
+
+
+```{r}
+
+thesecols <- c("RA", "Dec")
+k2_coords <- k2_real_targets %>% select(thesecols)
+
+write_csv(k2_coords, "k2-lists/k2_unique_targets.csv")
+
+```
+
+Write this out in chunks for use with the TESS visibility tool
+
+```{r}
+num_sources <- nrow(k2_coords)
+j <- 1
+group_size <- 10000
+num_steps <- ceiling(num_sources / group_size)
+
+filename_base <- "partial_k2_list-"
+
+for (i in 1:num_steps){
+  k <- i * group_size
+  if (k > num_sources){
+    k <- num_sources
+  }
+  temp <- k2_coords[j:k,]
+  thisfile <- paste("k2-lists/smaller-k2-lists/",filename_base,i,".csv",sep="")
+  write_csv(temp,thisfile,col_names=FALSE)
+  j <- k + 1
+}
+
+
+```
+
+I then manually upload these lists into the Web TESS Viewer tool.  The results are in overlaplists/smaller-wtv-results.  Now need to match these back up with their EPIC ids.  This will create a new all unique targets overlap list with the correct pointings for Cycle 2 and the anticipated ones for Cycle 3.
+
+Read these wtv results in, concatenate them.
+
+```{r}
+
+for (i in 1:num_steps){
+  thisfile <- paste("overlaplists/smaller-wtv-results/wtv-partial_k2_list-",i,".csv",sep="")
+  temp <- read_csv(thisfile,skip=44)
+  if (i == 1) {
+    wtv_output <- temp
+  } else {
+    wtv_output <- rbind(wtv_output, temp)
+  }
+}
+
+
+
+```
+
+```{r}
+mycols <- colnames(wtv_output)
+mycols[1] <-"wtv_ra"
+mycols[2] <-"wtv_dec"
+colnames(wtv_output) <-mycols
+```
+
+Append these results so we match back up with the epic
+
+```{r}
+k2_wtv <- cbind(k2_real_targets, wtv_output)
+```
+
+Double check that coordinates are the same for each row
+
+```{r}
+k2_wtv$check_col <- abs(k2_wtv$RA - k2_wtv$wtv_ra) + abs(k2_wtv$Dec - k2_wtv$wtv_dec)
+
+jj <- which(k2_wtv$check_col > 1.5e-6) #not zero because we seem to get some round off
+print(paste(length(jj), "rows have mis matched coordinates"))
+
+```
+So, let's move forward with this...
+
+```{r}
+k2_wtv$check_col <- NULL
+```
+
+Now let's just pull out the ones with TESS overlap...
+
+```{r}
+k2_wtv$num_sectors <- rowSums(k2_wtv[,9:47])
+
+jj <- which(k2_wtv$num_sectors > 0)
+print(paste("Number of entries with matches in wtv = ", length(jj)))
+
+```
+
+Let's just keep the ones with matches and ditch the rest
+
+```{r}
+k2_tess_overlaps <- k2_wtv %>% filter(num_sectors > 0)
+
+```
+
+Let's dump the duplicate coordinate columns and write this out for use in other notebooks.
+
+```{r}
+k2_tess_overlaps$wtv_ra <- NULL
+k2_tess_overlaps$wtv_dec <- NULL
+
+write_csv(k2_tess_overlaps,"overlaplists/all_k2_Sector1to39.csv")
+```
+
+
+
+
+
+
